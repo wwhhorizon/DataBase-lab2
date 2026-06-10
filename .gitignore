@@ -26,3 +26,6 @@ config.ini
 
 # Runtime uploads
 attachments/
+
+# Local report documents
+docs/
