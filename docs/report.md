@@ -342,6 +342,14 @@ E-R 图可见 [diagrams.md](E:\database\student_management_system\docs\diagrams.
 
 这种方案实现简单，满足课程要求，也避免了把大文件直接存入数据库带来的复杂度和性能问题。
 
+### 8.7 项目仓库地址
+
+本项目已上传至 GitHub，仓库地址为：
+
+[https://github.com/wwhhorizon/DataBase-lab2](https://github.com/wwhhorizon/DataBase-lab2)
+
+仓库中包含项目源代码、数据库脚本、课程设计报告、E-R 图、测试用例与使用说明等提交材料。运行时上传的附件目录 `attachments/` 已通过 `.gitignore` 忽略，不作为源码仓库内容提交。
+
 ## 9. 系统运行与使用说明
 
 ### 9.1 环境要求
