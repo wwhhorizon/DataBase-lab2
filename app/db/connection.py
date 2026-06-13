@@ -44,14 +44,20 @@ class Database:
             cursor.close()
 
     def query_all(self, sql: str, params: Iterable[Any] | None = None) -> list[dict[str, Any]]:
-        with self.cursor() as cursor:
+        connection = self.ensure_connection()
+        with connection.cursor() as cursor:
             cursor.execute(sql, params or ())
-            return list(cursor.fetchall())
+            rows = list(cursor.fetchall())
+        connection.commit()
+        return rows
 
     def query_one(self, sql: str, params: Iterable[Any] | None = None) -> dict[str, Any] | None:
-        with self.cursor() as cursor:
+        connection = self.ensure_connection()
+        with connection.cursor() as cursor:
             cursor.execute(sql, params or ())
-            return cursor.fetchone()
+            row = cursor.fetchone()
+        connection.commit()
+        return row
 
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> int:
         with self.cursor() as cursor:

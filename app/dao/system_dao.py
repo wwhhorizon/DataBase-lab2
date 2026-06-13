@@ -8,6 +8,64 @@ from app.db.connection import Database
 class SystemDAO:
     def __init__(self, database: Database):
         self.db = database
+        self._ensure_runtime_schema()
+
+    def _index_exists(self, table_name: str, index_name: str) -> bool:
+        row = self.db.query_one(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            LIMIT 1
+            """,
+            (table_name, index_name),
+        )
+        return row is not None
+
+    def _ensure_runtime_schema(self) -> None:
+        self.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS major_transfer_application (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                student_id INT NOT NULL,
+                target_major_id INT NOT NULL,
+                reason VARCHAR(500) NOT NULL,
+                status ENUM('待审核', '已通过', '已驳回') NOT NULL DEFAULT '待审核',
+                apply_date DATE NOT NULL,
+                review_comment VARCHAR(255),
+                reviewed_at DATETIME,
+                CONSTRAINT fk_transfer_application_student FOREIGN KEY (student_id) REFERENCES student(id) ON DELETE CASCADE,
+                CONSTRAINT fk_transfer_application_major FOREIGN KEY (target_major_id) REFERENCES major(id)
+            )
+            """
+        )
+        for index_name, ddl in [
+            (
+                "idx_transfer_application_student",
+                "CREATE INDEX idx_transfer_application_student ON major_transfer_application(student_id)",
+            ),
+            (
+                "idx_transfer_application_status",
+                "CREATE INDEX idx_transfer_application_status ON major_transfer_application(status)",
+            ),
+        ]:
+            if not self._index_exists("major_transfer_application", index_name):
+                self.db.execute(ddl)
+
+        if not self._index_exists("course", "uq_course_name_semester"):
+            duplicate = self.db.query_one(
+                """
+                SELECT name, semester
+                FROM course
+                GROUP BY name, semester
+                HAVING COUNT(*) > 1
+                LIMIT 1
+                """
+            )
+            if not duplicate:
+                self.db.execute("ALTER TABLE course ADD CONSTRAINT uq_course_name_semester UNIQUE (name, semester)")
 
     def get_admin_by_username(self, username: str) -> dict[str, Any] | None:
         return self.db.query_one(
@@ -122,7 +180,22 @@ class SystemDAO:
             """
         )
 
+    def _ensure_course_semester_unique(self, name: str, semester: str, course_id: int | None = None) -> None:
+        if course_id is None:
+            duplicate = self.db.query_one(
+                "SELECT id FROM course WHERE name=%s AND semester=%s LIMIT 1",
+                (name, semester),
+            )
+        else:
+            duplicate = self.db.query_one(
+                "SELECT id FROM course WHERE name=%s AND semester=%s AND id<>%s LIMIT 1",
+                (name, semester, course_id),
+            )
+        if duplicate:
+            raise ValueError("同一学期不能开设两门名称相同的课程。")
+
     def create_course(self, payload: dict[str, Any]) -> None:
+        self._ensure_course_semester_unique(payload["name"], payload["semester"])
         self.db.execute(
             """
             INSERT INTO course (course_code, name, credit, hours, semester)
@@ -138,6 +211,7 @@ class SystemDAO:
         )
 
     def update_course(self, course_id: int, payload: dict[str, Any]) -> None:
+        self._ensure_course_semester_unique(payload["name"], payload["semester"], course_id)
         self.db.execute(
             """
             UPDATE course
@@ -177,6 +251,21 @@ class SystemDAO:
             VALUES (%s, %s, CURRENT_DATE())
             """,
             (student_id, course_id),
+        )
+
+    def list_available_courses_for_student(self, student_id: int) -> list[dict[str, Any]]:
+        return self.db.query_all(
+            """
+            SELECT c.id, c.course_code, c.name AS course_name, c.credit, c.hours, c.semester
+            FROM course c
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM course_selection cs
+                WHERE cs.course_id = c.id AND cs.student_id = %s
+            )
+            ORDER BY c.semester, c.course_code
+            """,
+            (student_id,),
         )
 
     def save_score(self, selection_id: int, usual_score: float, final_score: float) -> None:
@@ -268,6 +357,74 @@ class SystemDAO:
 
         self.db.execute_transaction(operations)
 
+    def list_major_transfer_applications(self) -> list[dict[str, Any]]:
+        return self.db.query_all(
+            """
+            SELECT mta.id, s.student_no, s.name AS student_name, current_major.name AS current_major_name,
+                   target_major.name AS target_major_name, mta.reason, mta.status, mta.apply_date,
+                   mta.review_comment, mta.reviewed_at
+            FROM major_transfer_application mta
+            JOIN student s ON mta.student_id = s.id
+            JOIN major current_major ON s.major_id = current_major.id
+            JOIN major target_major ON mta.target_major_id = target_major.id
+            ORDER BY FIELD(mta.status, '待审核', '已通过', '已驳回'), mta.apply_date DESC, mta.id DESC
+            """
+        )
+
+    def review_major_transfer_application(self, application_id: int, status: str, review_comment: str) -> None:
+        if status not in {"已通过", "已驳回"}:
+            raise ValueError("审核状态不正确。")
+
+        def operations(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT mta.id, mta.student_id, mta.target_major_id, mta.reason, mta.status,
+                           old_major.name AS old_major_name, target_major.name AS target_major_name
+                    FROM major_transfer_application mta
+                    JOIN student s ON mta.student_id = s.id
+                    JOIN major old_major ON s.major_id = old_major.id
+                    JOIN major target_major ON mta.target_major_id = target_major.id
+                    WHERE mta.id=%s
+                    FOR UPDATE
+                    """,
+                    (application_id,),
+                )
+                application = cursor.fetchone()
+                if not application:
+                    raise ValueError("申请记录不存在。")
+                if application["status"] != "待审核":
+                    raise ValueError("该申请已审核，不能重复处理。")
+
+                cursor.execute(
+                    """
+                    UPDATE major_transfer_application
+                    SET status=%s, review_comment=%s, reviewed_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (status, review_comment, application_id),
+                )
+                if status == "已通过":
+                    cursor.execute(
+                        "UPDATE student SET major_id=%s WHERE id=%s",
+                        (application["target_major_id"], application["student_id"]),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO student_status_change
+                        (student_id, change_type, old_value, new_value, change_reason, change_date)
+                        VALUES (%s, '专业变更', %s, %s, %s, CURRENT_DATE())
+                        """,
+                        (
+                            application["student_id"],
+                            application["old_major_name"],
+                            application["target_major_name"],
+                            review_comment or application["reason"],
+                        ),
+                    )
+
+        self.db.execute_transaction(operations)
+
     def list_attachments(self) -> list[dict[str, Any]]:
         return self.db.query_all(
             """
@@ -300,7 +457,7 @@ class SystemDAO:
     def list_student_courses(self, student_id: int) -> list[dict[str, Any]]:
         return self.db.query_all(
             """
-            SELECT c.course_code, c.name AS course_name, c.credit, c.hours, c.semester,
+            SELECT cs.id AS selection_id, c.course_code, c.name AS course_name, c.credit, c.hours, c.semester,
                    sc.usual_score, sc.final_score, sc.total_score, sc.grade_level
             FROM course_selection cs
             JOIN course c ON cs.course_id = c.id
@@ -310,6 +467,53 @@ class SystemDAO:
             """,
             (student_id,),
         )
+
+    def list_student_major_transfer_applications(self, student_id: int) -> list[dict[str, Any]]:
+        return self.db.query_all(
+            """
+            SELECT m.name AS target_major_name, mta.reason, mta.status, mta.apply_date,
+                   mta.review_comment, mta.reviewed_at
+            FROM major_transfer_application mta
+            JOIN major m ON mta.target_major_id = m.id
+            WHERE mta.student_id=%s
+            ORDER BY mta.apply_date DESC, mta.id DESC
+            """,
+            (student_id,),
+        )
+
+    def submit_major_transfer_application(self, student_id: int, target_major_id: int, reason: str) -> None:
+        def operations(connection):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT major_id FROM student WHERE id=%s FOR UPDATE", (student_id,))
+                student = cursor.fetchone()
+                if not student:
+                    raise ValueError("学生不存在。")
+                if student["major_id"] == target_major_id:
+                    raise ValueError("目标专业不能与当前专业相同。")
+
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM major_transfer_application
+                    WHERE student_id=%s AND status='待审核'
+                    LIMIT 1
+                    """,
+                    (student_id,),
+                )
+                pending = cursor.fetchone()
+                if pending:
+                    raise ValueError("已有待审核的转专业申请，请等待处理后再提交。")
+
+                cursor.execute(
+                    """
+                    INSERT INTO major_transfer_application
+                    (student_id, target_major_id, reason, status, apply_date)
+                    VALUES (%s, %s, %s, '待审核', CURRENT_DATE())
+                    """,
+                    (student_id, target_major_id, reason),
+                )
+
+        self.db.execute_transaction(operations)
 
     def list_student_rewards(self, student_id: int) -> list[dict[str, Any]]:
         return self.db.query_all(

@@ -62,6 +62,12 @@ COLUMN_WIDTHS = {
     "new_value": 130,
     "change_reason": 320,
     "change_date": 160,
+    "current_major_name": 220,
+    "target_major_name": 220,
+    "reason": 360,
+    "apply_date": 160,
+    "review_comment": 320,
+    "reviewed_at": 210,
     "file_name": 260,
     "file_type": 110,
     "file_path": 360,
@@ -102,6 +108,7 @@ class AdminWindow(QMainWindow):
         self.selection_rows = []
         self.reward_rows = []
         self.change_rows = []
+        self.transfer_application_rows = []
         self.attachment_rows = []
 
         self.setWindowTitle(f"学籍管理系统 - 管理员端（{user.display_name}）")
@@ -151,6 +158,7 @@ class AdminWindow(QMainWindow):
         tabs.addTab(self._build_selection_tab(), "选课与成绩")
         tabs.addTab(self._build_reward_tab(), "奖惩管理")
         tabs.addTab(self._build_change_tab(), "学籍异动")
+        tabs.addTab(self._build_transfer_application_tab(), "转专业申请")
         tabs.addTab(self._build_attachment_tab(), "附件管理")
 
         self.refresh_all()
@@ -223,8 +231,6 @@ class AdminWindow(QMainWindow):
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(20)
         top = QHBoxLayout()
-        btn_add = self._button("新增选课", self.add_selection)
-        top.addWidget(btn_add)
         btn_score = self._button("录入/修改成绩", self.save_score, "secondary")
         top.addWidget(btn_score)
         layout.addLayout(top)
@@ -252,10 +258,25 @@ class AdminWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(20)
-        btn_add = self._button("登记学籍异动", self.add_status_change)
-        layout.addWidget(btn_add)
+        top = QHBoxLayout()
+        top.addWidget(self._button("登记状态变更", self.add_status_change))
+        top.addWidget(self._button("登记班级变更", self.add_class_change, "secondary"))
+        layout.addLayout(top)
         self.change_table = QTableWidget()
         layout.addWidget(self.change_table)
+        return page
+
+    def _build_transfer_application_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        top = QHBoxLayout()
+        top.addWidget(self._button("通过申请", lambda: self.review_transfer_application("已通过")))
+        top.addWidget(self._button("驳回申请", lambda: self.review_transfer_application("已驳回"), "danger"))
+        layout.addLayout(top)
+        self.transfer_application_table = QTableWidget()
+        layout.addWidget(self.transfer_application_table)
         return page
 
     def _build_attachment_tab(self):
@@ -282,6 +303,7 @@ class AdminWindow(QMainWindow):
         self.refresh_selections()
         self.refresh_rewards()
         self.refresh_changes()
+        self.refresh_transfer_applications()
         self.refresh_attachments()
 
     def refresh_dashboard(self):
@@ -368,6 +390,25 @@ class AdminWindow(QMainWindow):
             ],
         )
 
+    def refresh_transfer_applications(self):
+        self.transfer_application_rows = self.service.list_major_transfer_applications()
+        fill_table(
+            self.transfer_application_table,
+            self.transfer_application_rows,
+            [
+                ("id", "ID"),
+                ("student_no", "学号"),
+                ("student_name", "姓名"),
+                ("current_major_name", "当前专业"),
+                ("target_major_name", "目标专业"),
+                ("reason", "申请原因"),
+                ("status", "状态"),
+                ("apply_date", "申请日期"),
+                ("review_comment", "审核意见"),
+                ("reviewed_at", "审核时间"),
+            ],
+        )
+
     def refresh_attachments(self):
         self.attachment_rows = self.service.list_attachments()
         fill_table(
@@ -448,8 +489,11 @@ class AdminWindow(QMainWindow):
         ]
         dialog = FormDialog("新增课程", fields, parent=self)
         if dialog.exec_():
-            self.service.create_course(dialog.values())
-            self.refresh_courses()
+            try:
+                self.service.create_course(dialog.values())
+                self.refresh_courses()
+            except Exception as exc:
+                QMessageBox.warning(self, "新增失败", str(exc))
 
     def edit_course(self):
         try:
@@ -466,8 +510,11 @@ class AdminWindow(QMainWindow):
         ]
         dialog = FormDialog("编辑课程", fields, row, self)
         if dialog.exec_():
-            self.service.update_course(row["id"], dialog.values())
-            self.refresh_courses()
+            try:
+                self.service.update_course(row["id"], dialog.values())
+                self.refresh_courses()
+            except Exception as exc:
+                QMessageBox.warning(self, "保存失败", str(exc))
 
     def delete_course(self):
         try:
@@ -531,25 +578,98 @@ class AdminWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "删除失败", str(exc))
 
+    def _row_by_id(self, rows, row_id: int, missing_message: str):
+        for row in rows:
+            if row["id"] == row_id:
+                return row
+        raise ValueError(missing_message)
+
     def add_status_change(self):
         student_rows = self.service.list_students()
         student_options = [(f"{row['student_no']} - {row['name']}", row["id"]) for row in student_rows]
-        major_options = [(row["name"], row["id"]) for row in self.service.list_majors()]
-        class_options = [(row["name"], row["id"]) for row in self.service.list_classes()]
         fields = [
             {"name": "student_id", "label": "学生", "type": "combo", "options": student_options},
-            {"name": "change_type", "label": "异动类型", "type": "combo", "options": [("专业变更", "专业变更"), ("班级变更", "班级变更"), ("状态变更", "状态变更")]},
-            {"name": "old_value", "label": "原值"},
-            {"name": "new_value", "label": "新值"},
+            {"name": "new_status", "label": "新状态", "type": "combo", "options": [("在读", "在读"), ("休学", "休学"), ("毕业", "毕业")]},
             {"name": "change_reason", "label": "原因", "type": "multiline"},
             {"name": "change_date", "label": "日期", "type": "date"},
-            {"name": "new_ref_id", "label": "关联新值", "type": "combo", "options": [("无", 0)] + major_options + class_options},
         ]
-        dialog = FormDialog("登记学籍异动", fields, parent=self)
+        dialog = FormDialog("登记状态变更", fields, parent=self)
         if dialog.exec_():
-            self.service.add_status_change(dialog.values())
+            values = dialog.values()
+            try:
+                student = self._row_by_id(student_rows, values["student_id"], "学生不存在。")
+                if student["status"] == values["new_status"]:
+                    raise ValueError("新状态与当前状态相同。")
+                self.service.add_status_change(
+                    {
+                        "student_id": values["student_id"],
+                        "change_type": "状态变更",
+                        "old_value": student["status"],
+                        "new_value": values["new_status"],
+                        "change_reason": values["change_reason"],
+                        "change_date": values["change_date"],
+                        "new_ref_id": 0,
+                    }
+                )
+                self.refresh_changes()
+                self.refresh_students()
+            except Exception as exc:
+                QMessageBox.warning(self, "登记失败", str(exc))
+
+    def add_class_change(self):
+        student_rows = self.service.list_students()
+        class_rows = self.service.list_classes()
+        student_options = [(f"{row['student_no']} - {row['name']}", row["id"]) for row in student_rows]
+        class_options = [(f"{row['name']}（{row['major_name']}）", row["id"]) for row in class_rows]
+        fields = [
+            {"name": "student_id", "label": "学生", "type": "combo", "options": student_options},
+            {"name": "new_class_id", "label": "新班级", "type": "combo", "options": class_options},
+            {"name": "change_reason", "label": "原因", "type": "multiline"},
+            {"name": "change_date", "label": "日期", "type": "date"},
+        ]
+        dialog = FormDialog("登记班级变更", fields, parent=self)
+        if dialog.exec_():
+            values = dialog.values()
+            try:
+                student = self._row_by_id(student_rows, values["student_id"], "学生不存在。")
+                if student["class_id"] == values["new_class_id"]:
+                    raise ValueError("新班级与当前班级相同。")
+                new_class = self._row_by_id(class_rows, values["new_class_id"], "班级不存在。")
+                self.service.add_status_change(
+                    {
+                        "student_id": values["student_id"],
+                        "change_type": "班级变更",
+                        "old_value": student["class_name"],
+                        "new_value": new_class["name"],
+                        "change_reason": values["change_reason"],
+                        "change_date": values["change_date"],
+                        "new_ref_id": values["new_class_id"],
+                    }
+                )
+                self.refresh_changes()
+                self.refresh_students()
+            except Exception as exc:
+                QMessageBox.warning(self, "登记失败", str(exc))
+
+    def review_transfer_application(self, status: str):
+        try:
+            row = self._current_row(self.transfer_application_table, self.transfer_application_rows)
+        except Exception as exc:
+            QMessageBox.warning(self, "提示", str(exc))
+            return
+        fields = [{"name": "review_comment", "label": "审核意见", "type": "multiline"}]
+        dialog = FormDialog("审核转专业申请", fields, parent=self)
+        if not dialog.exec_():
+            return
+        values = dialog.values()
+        try:
+            self.service.review_major_transfer_application(row["id"], status, values["review_comment"])
+            self.refresh_transfer_applications()
             self.refresh_changes()
             self.refresh_students()
+            QMessageBox.information(self, "审核完成", "转专业申请已处理。")
+        except Exception as exc:
+            QMessageBox.warning(self, "审核失败", str(exc))
 
     def add_attachment(self):
         student_options = [(f"{row['student_no']} - {row['name']}", row["id"]) for row in self.service.list_students()]

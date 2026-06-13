@@ -1,14 +1,13 @@
-DROP DATABASE IF EXISTS student_management;
-CREATE DATABASE student_management CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE DATABASE IF NOT EXISTS student_management CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 USE student_management;
 
-CREATE TABLE major (
+CREATE TABLE IF NOT EXISTS major (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(100) NOT NULL UNIQUE,
     description VARCHAR(255)
 );
 
-CREATE TABLE class (
+CREATE TABLE IF NOT EXISTS class (
     id INT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(100) NOT NULL,
     grade_year INT NOT NULL,
@@ -16,14 +15,14 @@ CREATE TABLE class (
     CONSTRAINT fk_class_major FOREIGN KEY (major_id) REFERENCES major(id)
 );
 
-CREATE TABLE admin_user (
+CREATE TABLE IF NOT EXISTS admin_user (
     id INT PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) NOT NULL UNIQUE,
     password_hash CHAR(64) NOT NULL,
     full_name VARCHAR(100) NOT NULL
 );
 
-CREATE TABLE student (
+CREATE TABLE IF NOT EXISTS student (
     id INT PRIMARY KEY AUTO_INCREMENT,
     student_no VARCHAR(20) NOT NULL UNIQUE,
     password_hash CHAR(64) NOT NULL,
@@ -40,16 +39,17 @@ CREATE TABLE student (
     CONSTRAINT fk_student_class FOREIGN KEY (class_id) REFERENCES class(id)
 );
 
-CREATE TABLE course (
+CREATE TABLE IF NOT EXISTS course (
     id INT PRIMARY KEY AUTO_INCREMENT,
     course_code VARCHAR(20) NOT NULL UNIQUE,
     name VARCHAR(100) NOT NULL,
     credit DECIMAL(4,1) NOT NULL,
     hours INT NOT NULL,
-    semester VARCHAR(50) NOT NULL
+    semester VARCHAR(50) NOT NULL,
+    CONSTRAINT uq_course_name_semester UNIQUE (name, semester)
 );
 
-CREATE TABLE course_selection (
+CREATE TABLE IF NOT EXISTS course_selection (
     id INT PRIMARY KEY AUTO_INCREMENT,
     student_id INT NOT NULL,
     course_id INT NOT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE course_selection (
     CONSTRAINT fk_selection_course FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );
 
-CREATE TABLE score (
+CREATE TABLE IF NOT EXISTS score (
     id INT PRIMARY KEY AUTO_INCREMENT,
     selection_id INT NOT NULL UNIQUE,
     usual_score DECIMAL(5,2) NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE score (
     CONSTRAINT fk_score_selection FOREIGN KEY (selection_id) REFERENCES course_selection(id) ON DELETE CASCADE
 );
 
-CREATE TABLE score_audit_log (
+CREATE TABLE IF NOT EXISTS score_audit_log (
     id INT PRIMARY KEY AUTO_INCREMENT,
     selection_id INT NOT NULL,
     old_total_score DECIMAL(5,2),
@@ -79,7 +79,7 @@ CREATE TABLE score_audit_log (
     note VARCHAR(255)
 );
 
-CREATE TABLE reward_punishment (
+CREATE TABLE IF NOT EXISTS reward_punishment (
     id INT PRIMARY KEY AUTO_INCREMENT,
     student_id INT NOT NULL,
     record_type ENUM('奖励', '惩罚') NOT NULL,
@@ -89,7 +89,7 @@ CREATE TABLE reward_punishment (
     CONSTRAINT fk_reward_student FOREIGN KEY (student_id) REFERENCES student(id) ON DELETE CASCADE
 );
 
-CREATE TABLE student_status_change (
+CREATE TABLE IF NOT EXISTS student_status_change (
     id INT PRIMARY KEY AUTO_INCREMENT,
     student_id INT NOT NULL,
     change_type ENUM('专业变更', '班级变更', '状态变更') NOT NULL,
@@ -100,7 +100,20 @@ CREATE TABLE student_status_change (
     CONSTRAINT fk_change_student FOREIGN KEY (student_id) REFERENCES student(id) ON DELETE CASCADE
 );
 
-CREATE TABLE student_attachment (
+CREATE TABLE IF NOT EXISTS major_transfer_application (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    student_id INT NOT NULL,
+    target_major_id INT NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    status ENUM('待审核', '已通过', '已驳回') NOT NULL DEFAULT '待审核',
+    apply_date DATE NOT NULL,
+    review_comment VARCHAR(255),
+    reviewed_at DATETIME,
+    CONSTRAINT fk_transfer_application_student FOREIGN KEY (student_id) REFERENCES student(id) ON DELETE CASCADE,
+    CONSTRAINT fk_transfer_application_major FOREIGN KEY (target_major_id) REFERENCES major(id)
+);
+
+CREATE TABLE IF NOT EXISTS student_attachment (
     id INT PRIMARY KEY AUTO_INCREMENT,
     student_id INT NOT NULL,
     file_name VARCHAR(255) NOT NULL,
@@ -116,10 +129,13 @@ CREATE INDEX idx_student_major ON student(major_id);
 CREATE INDEX idx_course_code ON course(course_code);
 CREATE INDEX idx_reward_student ON reward_punishment(student_id);
 CREATE INDEX idx_change_student ON student_status_change(student_id);
+CREATE INDEX idx_transfer_application_student ON major_transfer_application(student_id);
+CREATE INDEX idx_transfer_application_status ON major_transfer_application(status);
 CREATE INDEX idx_attachment_student ON student_attachment(student_id);
 
 DELIMITER $$
 
+DROP FUNCTION IF EXISTS fn_calculate_total_score$$
 CREATE FUNCTION fn_calculate_total_score(p_usual DECIMAL(5,2), p_final DECIMAL(5,2))
 RETURNS DECIMAL(5,2)
 DETERMINISTIC
@@ -127,6 +143,7 @@ BEGIN
     RETURN ROUND(p_usual * 0.4 + p_final * 0.6, 2);
 END $$
 
+DROP FUNCTION IF EXISTS fn_score_to_level$$
 CREATE FUNCTION fn_score_to_level(p_score DECIMAL(5,2))
 RETURNS VARCHAR(20)
 DETERMINISTIC
@@ -146,6 +163,7 @@ BEGIN
     RETURN v_level;
 END $$
 
+DROP PROCEDURE IF EXISTS sp_upsert_student_profile$$
 CREATE PROCEDURE sp_upsert_student_profile(
     IN p_student_no VARCHAR(20),
     IN p_password VARCHAR(100),
@@ -182,6 +200,7 @@ BEGIN
     END IF;
 END $$
 
+DROP TRIGGER IF EXISTS trg_score_before_update$$
 CREATE TRIGGER trg_score_before_update
 BEFORE UPDATE ON score
 FOR EACH ROW
@@ -189,6 +208,7 @@ BEGIN
     SET NEW.last_updated = NOW();
 END $$
 
+DROP TRIGGER IF EXISTS trg_score_after_update$$
 CREATE TRIGGER trg_score_after_update
 AFTER UPDATE ON score
 FOR EACH ROW
@@ -199,18 +219,18 @@ END $$
 
 DELIMITER ;
 
-INSERT INTO major (name, description) VALUES
+INSERT IGNORE INTO major (name, description) VALUES
 ('计算机科学与技术', '培养软件与系统开发能力'),
 ('信息管理与信息系统', '培养信息资源管理与系统分析能力');
 
-INSERT INTO class (name, grade_year, major_id) VALUES
+INSERT IGNORE INTO class (name, grade_year, major_id) VALUES
 ('计科2301', 2023, 1),
 ('信管2301', 2023, 2);
 
-INSERT INTO admin_user (username, password_hash, full_name) VALUES
+INSERT IGNORE INTO admin_user (username, password_hash, full_name) VALUES
 ('admin', SHA2('Admin@123', 256), '系统管理员');
 
-INSERT INTO student (student_no, password_hash, name, gender, phone, email, enrollment_year, status, major_id, class_id) VALUES
+INSERT IGNORE INTO student (student_no, password_hash, name, gender, phone, email, enrollment_year, status, major_id, class_id) VALUES
 ('PB23111001', SHA2('Stu@123', 256), '张明远', '男', '13800001001', 'pb23111001@example.com', 2023, '在读', 1, 1),
 ('PB23111002', SHA2('Stu@123', 256), '李思雨', '女', '13800001002', 'pb23111002@example.com', 2023, '在读', 1, 1),
 ('PB23111003', SHA2('Stu@123', 256), '王子涵', '男', '13800001003', 'pb23111003@example.com', 2023, '在读', 1, 1),
@@ -220,12 +240,12 @@ INSERT INTO student (student_no, password_hash, name, gender, phone, email, enro
 ('PB23111007', SHA2('Stu@123', 256), '周嘉诚', '男', '13800001007', 'pb23111007@example.com', 2023, '休学', 2, 2),
 ('PB23111008', SHA2('Stu@123', 256), '孙若宁', '女', '13800001008', 'pb23111008@example.com', 2023, '在读', 2, 2);
 
-INSERT INTO course (course_code, name, credit, hours, semester) VALUES
+INSERT IGNORE INTO course (course_code, name, credit, hours, semester) VALUES
 ('DB101', '数据库原理', 3.0, 48, '2024-2025-2'),
 ('SE201', '软件工程', 3.0, 48, '2024-2025-2'),
 ('PY301', 'Python 程序设计', 2.0, 32, '2024-2025-1');
 
-INSERT INTO course_selection (student_id, course_id, selection_date) VALUES
+INSERT IGNORE INTO course_selection (student_id, course_id, selection_date) VALUES
 (1, 1, '2025-03-01'),
 (1, 2, '2025-03-02'),
 (2, 1, '2025-03-01'),
@@ -242,7 +262,7 @@ INSERT INTO course_selection (student_id, course_id, selection_date) VALUES
 (8, 1, '2025-03-01'),
 (8, 2, '2025-03-02');
 
-INSERT INTO score (selection_id, usual_score, final_score, total_score, grade_level) VALUES
+INSERT IGNORE INTO score (selection_id, usual_score, final_score, total_score, grade_level) VALUES
 (1, 86, 90, fn_calculate_total_score(86, 90), fn_score_to_level(fn_calculate_total_score(86, 90))),
 (2, 80, 84, fn_calculate_total_score(80, 84), fn_score_to_level(fn_calculate_total_score(80, 84))),
 (3, 88, 92, fn_calculate_total_score(88, 92), fn_score_to_level(fn_calculate_total_score(88, 92))),
@@ -259,12 +279,12 @@ INSERT INTO score (selection_id, usual_score, final_score, total_score, grade_le
 (14, 93, 95, fn_calculate_total_score(93, 95), fn_score_to_level(fn_calculate_total_score(93, 95))),
 (15, 85, 88, fn_calculate_total_score(85, 88), fn_score_to_level(fn_calculate_total_score(85, 88)));
 
-INSERT INTO reward_punishment (student_id, record_type, title, description, record_date) VALUES
+INSERT IGNORE INTO reward_punishment (student_id, record_type, title, description, record_date) VALUES
 (1, '奖励', '三好学生', '2024 学年综合表现优秀', '2024-12-20'),
 (2, '奖励', '数据库实验优秀', '数据库实验完成质量高', '2024-12-22'),
 (5, '惩罚', '迟到通报', '因多次迟到进行通报批评', '2024-11-02'),
 (8, '奖励', '优秀班干部', '班级事务组织表现突出', '2024-12-25');
 
-INSERT INTO student_status_change (student_id, change_type, old_value, new_value, change_reason, change_date) VALUES
+INSERT IGNORE INTO student_status_change (student_id, change_type, old_value, new_value, change_reason, change_date) VALUES
 (1, '状态变更', '在读', '在读', '初始化示例数据', '2024-09-01'),
 (7, '状态变更', '在读', '休学', '因个人原因办理休学', '2025-01-10');

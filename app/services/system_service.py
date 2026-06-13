@@ -55,6 +55,9 @@ class SystemService:
     def create_selection(self, student_id: int, course_id: int):
         self.dao.create_selection(student_id, course_id)
 
+    def list_available_courses_for_student(self, student_id: int):
+        return self.dao.list_available_courses_for_student(student_id)
+
     def save_score(self, selection_id: int, usual_score: float, final_score: float):
         self.dao.save_score(selection_id, usual_score, final_score)
 
@@ -72,6 +75,12 @@ class SystemService:
 
     def add_status_change(self, payload):
         self.dao.add_status_change(payload)
+
+    def list_major_transfer_applications(self):
+        return self.dao.list_major_transfer_applications()
+
+    def review_major_transfer_application(self, application_id: int, status: str, review_comment: str):
+        self.dao.review_major_transfer_application(application_id, status, review_comment)
 
     def list_attachments(self):
         return self.dao.list_attachments()
@@ -113,3 +122,9 @@ class SystemService:
 
     def list_student_attachments(self, student_id: int):
         return self.dao.list_student_attachments(student_id)
+
+    def list_student_major_transfer_applications(self, student_id: int):
+        return self.dao.list_student_major_transfer_applications(student_id)
+
+    def submit_major_transfer_application(self, student_id: int, target_major_id: int, reason: str):
+        self.dao.submit_major_transfer_application(student_id, target_major_id, reason)
